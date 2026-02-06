@@ -25,7 +25,7 @@ except Exception:  # noqa: BLE001
 class CGPoint(ctypes.Structure):
     _fields_ = [("x", ctypes.c_double), ("y", ctypes.c_double)]
 
-DEFAULT_IP = "10.41.49.227"
+DEFAULT_IP = "10.237.34.227"
 DEFAULT_PORT = 8090
 
 # --- UPDATED RESOLUTION ---
