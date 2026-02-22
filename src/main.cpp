@@ -1,137 +1,112 @@
-#include <TFT_eSPI.h>
-#include <SPI.h>
+#include <Arduino.h>
+#include <TJpg_Decoder.h>
 #include <WiFi.h>
-#include <WiFiServer.h>
-#include <esp_heap_caps.h>
+#include <WebSocketsServer.h>
+#include <TFT_eSPI.h>
 
-TFT_eSPI tft = TFT_eSPI();
-
-// --- ADAPTED FOR 320x240 ---
-#define DISPLAY_WIDTH 320 
-#define DISPLAY_HEIGHT 240
-
-// WiFi credentials
+// --- Configuration ---
 const char* ssid = "iphone";
 const char* password = "123456789";
+const int websocket_port = 81;
 
-WiFiServer server(8090);
-WiFiClient client;
+// --- Global Objects ---
+WebSocketsServer webSocket = WebSocketsServer(websocket_port);
+TFT_eSPI tft = TFT_eSPI();
 
-// Protocol constants
-const uint8_t MAGIC[4] = {'P', 'X', 'U', 'P'};
-const uint8_t PROTO_VERSION = 0x02;
-const size_t HEADER_SIZE = 11;
-const uint8_t MAGIC_RUN[4] = {'P', 'X', 'U', 'R'};
-const uint8_t RUN_VERSION = 0x01;
-const size_t RUN_HEADER_SIZE = 11;
+#define JPEG_BUFFER_SIZE (50 * 1024)
+uint8_t* jpeg_buffer = nullptr;
+uint32_t jpeg_buffer_pos = 0;
+uint32_t expected_jpeg_size = 0;
 
-struct PixelUpdate {
-  uint16_t x;
-  uint16_t y;
-  uint16_t len; // Changed to 16-bit to support > 255
-  uint16_t color;
-};
+// --- Function Prototypes ---
+// In C++, functions must be declared before they are called.
+bool tft_output(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t* bitmap);
+void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length);
 
-PixelUpdate* updateBuffer = nullptr;
-uint32_t bufferCapacity = 0;
+// --- Implementation ---
 
-// Dynamic Buffer Logic
-bool ensureUpdateBuffer(uint32_t needed) {
-  if (needed <= bufferCapacity && updateBuffer != nullptr) return true;
-  PixelUpdate* tmp = (PixelUpdate*)ps_malloc(needed * sizeof(PixelUpdate));
-  if (!tmp) tmp = (PixelUpdate*)malloc(needed * sizeof(PixelUpdate));
-  if (!tmp) return false;
-  if (updateBuffer) free(updateBuffer);
-  updateBuffer = tmp;
-  bufferCapacity = needed;
-  return true;
+bool tft_output(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t* bitmap) {
+    if (y >= tft.height()) return false;
+    tft.pushImage(x, y, w, h, bitmap);
+    return true;
 }
 
-bool readExactly(WiFiClient& c, uint8_t* dst, size_t len) {
-  size_t got = 0;
-  while (got < len && c.connected()) {
-    int chunk = c.read(dst + got, len - got);
-    if (chunk > 0) got += chunk;
-    else delay(1);
-  }
-  return got == len;
-}
+void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length) {
+    switch (type) {
+        case WStype_DISCONNECTED:
+            Serial.printf("[%u] Connection lost!\n", num);
+            break;
 
-void showWaitingScreen() {
-  tft.fillScreen(TFT_BLACK);
-  tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft.setCursor(10, 20); tft.setTextSize(2);
-  tft.println("WIFI PIXEL RX");
-  tft.setCursor(10, 50); tft.setTextSize(1);
-  tft.println("IP Address:");
-  tft.setCursor(10, 70); tft.setTextSize(2);
-  tft.setTextColor(TFT_GREEN, TFT_BLACK);
-  tft.println(WiFi.localIP().toString());
+        case WStype_TEXT: {
+            String text = String((char*)payload);
+            if (text.startsWith("JPEG_FRAME_SIZE:")) {
+                expected_jpeg_size = text.substring(16).toInt();
+                jpeg_buffer_pos = 0;
+                
+                if (expected_jpeg_size > JPEG_BUFFER_SIZE) {
+                    Serial.printf("Error: JPEG size (%d) exceeds buffer (%d)!\n", expected_jpeg_size, JPEG_BUFFER_SIZE);
+                    expected_jpeg_size = 0;
+                }
+            }
+            break;
+        }
+
+        case WStype_BIN:
+            if (expected_jpeg_size > 0 && (jpeg_buffer_pos + length) <= expected_jpeg_size) {
+                memcpy(jpeg_buffer + jpeg_buffer_pos, payload, length);
+                jpeg_buffer_pos += length;
+            }
+
+            if (expected_jpeg_size > 0 && jpeg_buffer_pos >= expected_jpeg_size) {
+                TJpgDec.drawJpg(0, 0, jpeg_buffer, expected_jpeg_size);
+                expected_jpeg_size = 0;
+            }
+            break;
+            
+        default:
+            break;
+    }
 }
 
 void setup() {
-  Serial.begin(115200);
-  tft.init();
-  tft.invertDisplay(true);
-  tft.setRotation(1); // Landscape 320x240
-  tft.fillScreen(TFT_BLACK);
+    Serial.begin(115200);
 
-  WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) { delay(250); Serial.print("."); }
+    // Use ps_malloc for ESP32 with PSRAM, otherwise use standard malloc
+    jpeg_buffer = (uint8_t*)malloc(JPEG_BUFFER_SIZE);
+    if (jpeg_buffer == nullptr) {
+        Serial.println("Error: Could not allocate JPEG buffer!");
+        while (1) delay(10);
+    }
 
-  showWaitingScreen();
-  server.begin();
-  server.setNoDelay(true);
+    tft.init();
+    tft.setRotation(0); 
+    tft.fillScreen(TFT_BLACK);
+
+    TJpgDec.setJpgScale(1);
+    TJpgDec.setSwapBytes(true);
+    TJpgDec.setCallback(tft_output);
+
+    tft.setCursor(10, 10);
+    tft.setTextColor(TFT_WHITE);
+    tft.setTextSize(2);
+    tft.println("Waiting Wi-Fi...");
+
+    WiFi.begin(ssid, password);
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(500);
+        Serial.print(".");
+    }
+
+    tft.fillScreen(TFT_BLACK);
+    tft.setCursor(10, 10);
+    tft.println("Connection Success!");
+    tft.print("IP: ");
+    tft.println(WiFi.localIP());
+    
+    webSocket.begin();
+    webSocket.onEvent(webSocketEvent);
 }
 
 void loop() {
-  if (!client || !client.connected()) {
-    client = server.available();
-    if (client) {
-      client.setNoDelay(true);
-      tft.fillScreen(TFT_BLACK);
-    }
-  }
-
-  if (client && client.connected() && client.available() >= 11) {
-    uint8_t magicBuf[4];
-    if (readExactly(client, magicBuf, 4)) {
-      bool isRun = (memcmp(magicBuf, MAGIC_RUN, 4) == 0);
-      bool isPixel = (memcmp(magicBuf, MAGIC, 4) == 0);
-
-      if (isPixel || isRun) {
-        uint8_t rest[7]; // version(1), frame_id(4), count(2)
-        readExactly(client, rest, 7);
-        uint16_t count = rest[5] | (rest[6] << 8);
-
-        if (count > 0 && ensureUpdateBuffer(count)) {
-          tft.startWrite();
-          for (uint16_t i = 0; i < count; i++) {
-            if (isPixel) {
-              // Read 6 bytes: X(2), Y(2), Color(2)
-              uint8_t entry[6];
-              readExactly(client, entry, 6);
-              uint16_t x = entry[0] | (entry[1] << 8);
-              uint16_t y = entry[2] | (entry[3] << 8);
-              uint16_t color = entry[4] | (entry[5] << 8);
-              tft.drawPixel(x, y, color);
-            } else {
-              // Read 8 bytes: Y(2), X(2), Len(2), Color(2)
-              uint8_t entry[8];
-              readExactly(client, entry, 8);
-              uint16_t y = entry[0] | (entry[1] << 8);
-              uint16_t x = entry[2] | (entry[3] << 8);
-              uint16_t len = entry[4] | (entry[5] << 8); // Now handles > 255
-              uint16_t color = entry[6] | (entry[7] << 8);
-              
-              tft.setAddrWindow(x, y, len, 1);
-              tft.writeColor(color, len);
-            }
-          }
-          tft.endWrite();
-        }
-      }
-    }
-  }
-  delay(1);
+    webSocket.loop();
 }
