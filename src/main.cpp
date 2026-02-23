@@ -1,112 +1,102 @@
 #include <Arduino.h>
-#include <TJpg_Decoder.h>
-#include <WiFi.h>
-#include <WebSocketsServer.h>
-#include <TFT_eSPI.h>
+#include <MD_MAX72xx.h>
+#include "tetris.h"
 
-// --- Configuration ---
-const char* ssid = "iphone";
-const char* password = "123456789";
-const int websocket_port = 81;
+// ================== CONFIG ==================
+#define HARDWARE_TYPE MD_MAX72XX::FC16_HW
+#define MAX_DEVICES   4
 
-// --- Global Objects ---
-WebSocketsServer webSocket = WebSocketsServer(websocket_port);
-TFT_eSPI tft = TFT_eSPI();
+#define CLK_PIN       18
+#define DATA_PIN      23
+#define CS_PIN        5
+// ============================================
 
-#define JPEG_BUFFER_SIZE (50 * 1024)
-uint8_t* jpeg_buffer = nullptr;
-uint32_t jpeg_buffer_pos = 0;
-uint32_t expected_jpeg_size = 0;
+// Global objects
+MD_MAX72XX mx(HARDWARE_TYPE, DATA_PIN, CLK_PIN, CS_PIN, MAX_DEVICES);
 
-// --- Function Prototypes ---
-// In C++, functions must be declared before they are called.
-bool tft_output(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t* bitmap);
-void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length);
+game tetris;
+int dir;
 
-// --- Implementation ---
+// ============ FUNCTIONS =====================
 
-bool tft_output(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t* bitmap) {
-    if (y >= tft.height()) return false;
-    tft.pushImage(x, y, w, h, bitmap);
-    return true;
+void scrollText(const char *p)
+{
+  uint8_t charWidth;
+  uint8_t cBuf[8];
+
+  mx.clear();
+
+  while (*p != '\0')
+  {
+    charWidth = mx.getChar(*p++, sizeof(cBuf), cBuf);
+
+    for (uint8_t i = 0; i <= charWidth; i++)
+    {
+      mx.transform(MD_MAX72XX::TSL);
+      if (i < charWidth)
+        mx.setColumn(0, cBuf[i]);
+
+      delay(50);
+    }
+  }
 }
 
-void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length) {
-    switch (type) {
-        case WStype_DISCONNECTED:
-            Serial.printf("[%u] Connection lost!\n", num);
-            break;
+void draw(game *g)
+{
+  int mx_cols = mx.getColumnCount();
+  int col_count = 0;
 
-        case WStype_TEXT: {
-            String text = String((char*)payload);
-            if (text.startsWith("JPEG_FRAME_SIZE:")) {
-                expected_jpeg_size = text.substring(16).toInt();
-                jpeg_buffer_pos = 0;
-                
-                if (expected_jpeg_size > JPEG_BUFFER_SIZE) {
-                    Serial.printf("Error: JPEG size (%d) exceeds buffer (%d)!\n", expected_jpeg_size, JPEG_BUFFER_SIZE);
-                    expected_jpeg_size = 0;
-                }
-            }
-            break;
-        }
+  // Draw next piece
+  u16 *next = g->next + 1;
 
-        case WStype_BIN:
-            if (expected_jpeg_size > 0 && (jpeg_buffer_pos + length) <= expected_jpeg_size) {
-                memcpy(jpeg_buffer + jpeg_buffer_pos, payload, length);
-                jpeg_buffer_pos += length;
-            }
+  for (int j = 0; j < T; ++j)
+  {
+    mx.setColumn(mx_cols - 2 - col_count++ - 1, next[j] << 3);
+  }
 
-            if (expected_jpeg_size > 0 && jpeg_buffer_pos >= expected_jpeg_size) {
-                TJpgDec.drawJpg(0, 0, jpeg_buffer, expected_jpeg_size);
-                expected_jpeg_size = 0;
-            }
-            break;
-            
-        default:
-            break;
-    }
+  mx.setColumn(mx_cols - 8, 0xff);
+
+  // Draw board
+  col_count = 0;
+  for (int j = T; j < g->h + T; ++j)
+  {
+    mx.setColumn(mx_cols - 8 - col_count++ - 1, g->board_dr[j]);
+  }
 }
 
-void setup() {
-    Serial.begin(115200);
+void draw_game_over(game *g)
+{
+  mx.clear();
+  scrollText("GAME OVER");
 
-    // Use ps_malloc for ESP32 with PSRAM, otherwise use standard malloc
-    jpeg_buffer = (uint8_t*)malloc(JPEG_BUFFER_SIZE);
-    if (jpeg_buffer == nullptr) {
-        Serial.println("Error: Could not allocate JPEG buffer!");
-        while (1) delay(10);
-    }
+  char buf[16];
+  itoa(g->score, buf, 10);
+  scrollText(buf);
 
-    tft.init();
-    tft.setRotation(0); 
-    tft.fillScreen(TFT_BLACK);
-
-    TJpgDec.setJpgScale(1);
-    TJpgDec.setSwapBytes(true);
-    TJpgDec.setCallback(tft_output);
-
-    tft.setCursor(10, 10);
-    tft.setTextColor(TFT_WHITE);
-    tft.setTextSize(2);
-    tft.println("Waiting Wi-Fi...");
-
-    WiFi.begin(ssid, password);
-    while (WiFi.status() != WL_CONNECTED) {
-        delay(500);
-        Serial.print(".");
-    }
-
-    tft.fillScreen(TFT_BLACK);
-    tft.setCursor(10, 10);
-    tft.println("Connection Success!");
-    tft.print("IP: ");
-    tft.println(WiFi.localIP());
-    
-    webSocket.begin();
-    webSocket.onEvent(webSocketEvent);
+  delay(3000);
+  mx.clear();
 }
 
-void loop() {
-    webSocket.loop();
+// =============== SETUP =======================
+
+void setup()
+{
+  mx.begin();
+  mx.clear();
+  mx.control(MD_MAX72XX::INTENSITY, 1);
+
+  dir = LEFT;
+
+  tetris.w = 8;
+  tetris.h = 24;
+
+  game_init(&tetris);
+}
+
+// =============== LOOP ========================
+
+void loop()
+{
+  // No buttons for now
+  game_loop(&tetris);
 }
