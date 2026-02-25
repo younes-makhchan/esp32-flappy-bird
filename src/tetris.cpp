@@ -272,7 +272,6 @@ int move_shape(game *g, int dir) {
 
   return OK;
 }
-
 void game_loop(game *g) {
   if (g->msg != NONE) {
     switch (g->msg) {
@@ -314,9 +313,9 @@ void game_loop(game *g) {
       g->bottom = false;
     }
   } else if (!g->paused) {
-    // from emacs tetris.el
-    // x = 0:1000; y = (20 ./ (50 + x)) * 1000; plot(x, y);
+    // calculate game speed
     g->period = (int) ((20.0 / (50.0 + g->rows)) * 1000.0);
+    
     if (millis() >= g->time_now + g->period) {
       g->time_now += g->period;
 
@@ -335,23 +334,60 @@ void game_loop(game *g) {
         ++g->shapes;
         g->score += shape_scores[S_TYPE(g->current)][S_ROTATION(g->current)];
         put_shape(g, g->current, g->board, g->curr_x, g->curr_y);
-        next(g);
+        next(g); // spawn next shape
       }
 
-      // check lines
+      // --- NEW FLASHING LOGIC ---
+      
+      // 1. Check if any lines are fully completed
+      bool lines_cleared = false;
       for (int j = g->h + T - 1; j >= T; --j) {
         if (g->board[j] == LINE(g)) {
-          g->board[j] = 0;
-          for (int k = j; k >= T; --k) {
-            g->board[k] = g->board[k - 1];
-          }
-          ++j;
-          ++g->rows;
+          lines_cleared = true;
+          break;
         }
       }
 
+      // 2. Animate the flash if lines are complete
+      if (lines_cleared) {
+        // Flash 3 times
+        for (int flash = 0; flash < 3; ++flash) {
+          // Turn off completed lines
+          for (int j = T; j < g->h + T; ++j) {
+            if (g->board[j] == LINE(g)) g->board_dr[j] = 0; 
+            else g->board_dr[j] = g->board[j];
+          }
+          draw(g);
+          delay(100); // Wait 100ms
+
+          // Turn on completed lines
+          for (int j = T; j < g->h + T; ++j) {
+            if (g->board[j] == LINE(g)) g->board_dr[j] = LINE(g); 
+            else g->board_dr[j] = g->board[j];
+          }
+          draw(g);
+          delay(100); // Wait 100ms
+        }
+
+        // 3. Actually remove the lines and collapse the board
+        for (int j = g->h + T - 1; j >= T; --j) {
+          if (g->board[j] == LINE(g)) {
+            g->board[j] = 0;
+            for (int k = j; k >= T; --k) {
+              g->board[k] = g->board[k - 1];
+            }
+            ++j;
+            ++g->rows;
+          }
+        }
+        
+        // 4. Update the drawing board so the new piece doesn't flicker
+        copy(g->board, g->board_dr, g->h + T);
+        put_shape(g, g->current, g->board_dr, g->curr_x, g->curr_y);
+      }
+      // --- END NEW FLASHING LOGIC ---
+
       draw(g);
     }
-
   }
 }

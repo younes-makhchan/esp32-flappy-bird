@@ -86,3 +86,4 @@ ul   millis();
 // drawing utils
 void draw(game *g);
 void draw_game_over(game *g);
+int move_shape(game *g, int dir);

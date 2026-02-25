@@ -24,7 +24,6 @@ EasyButton btn_a(BUTTON_A);
 EasyButton btn_b(BUTTON_B);
 
 game tetris;
-int dir;
 
 // ============ FUNCTIONS =====================
 
@@ -92,16 +91,31 @@ void draw_game_over(game *g)
 
 // ============ BUTTON CALLBACKS ==============
 
-void on_btn_a() { tetris.msg = ROTATE2; }
-void on_btn_a_2() { tetris.msg = BOTTOM2; }
+// Button A short press: Move Left
+void on_btn_a() { tetris.msg = LEFT; }
 
-void on_btn_b() { tetris.msg = dir; }
+// Button A long press: Rotate
+void on_btn_a_2() { tetris.msg = ROTATE2; }
 
-void on_btn_b_2()
+// Button B short press: Move Right
+void on_btn_b() { tetris.msg = RIGHT; }
+
+// Button B long press: Drop object
+void animated_drop(game *g)
 {
-  dir = (dir == LEFT) ? RIGHT : LEFT;
-  tetris.msg = dir;
+  while (true)
+  {
+    check_btns();
+    int prev_y = g->curr_y;
+    move_shape(g, DOWN);          // move one step down via the engine
+    draw(g);
+    delay(40);                    // pause so the eye can follow it
+    if (g->curr_y == prev_y) break; // piece didn't move = it locked, stop
+  }
 }
+
+// Button B long press: Animated drop
+void on_btn_b_2() { animated_drop(&tetris); }
 
 void check_btns()
 {
@@ -115,7 +129,7 @@ void setup()
 {
   mx.begin();
   mx.clear();
-  mx.control(MD_MAX72XX::INTENSITY, 1);
+  mx.control(MD_MAX72XX::INTENSITY, 2);
 
   btn_a.begin();
   btn_a.onPressed(on_btn_a);
@@ -124,8 +138,6 @@ void setup()
   btn_b.begin();
   btn_b.onPressed(on_btn_b);
   btn_b.onPressedFor(BTN_LONG_DURATION, on_btn_b_2);
-
-  dir = LEFT;
 
   tetris.w = 8;
   tetris.h = 24;
