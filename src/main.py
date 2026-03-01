@@ -1,57 +1,40 @@
-import asyncio
-import websockets
-import mss
-from PIL import Image
-import numpy as np
-import io 
+import serial
+import pydirectinput
+import time
 
-ESP32_IP = "192.168.137.7"
-ESP32_PORT = 81
-SCREEN_WIDTH = 240
-SCREEN_HEIGHT = 320
-JPEG_QUALITY = 65 
-TARGET_FPS = 15
-CAPTURE_REGION = {
-    "top":    100,   # Y position from top of screen (pixels)
-    "left":   1,   # X position from left of screen (pixels)
-    "width":  430,   # Width of the region to capture
-    "height": 940,   # Height of the region to capture
-}
-async def send_screen():
-    uri = f"ws://{ESP32_IP}:{ESP32_PORT}"
-    
-    while True: 
+# Open Serial with 0 timeout for instant response
+ser = serial.Serial('COM7', 115200, timeout=0) 
+
+# Memory: True = Finger is ON button, False = Finger is OFF
+is_left = False
+is_right = False
+is_z = False
+
+print("Mario Controller: HOLD mode active.")
+
+while True:
+    # 1. Check for updates from ESP32
+    if ser.in_waiting > 0:
         try:
-            print(f"Connetting to ESP32: {uri}")
-            async with websockets.connect(uri, ping_interval=None) as websocket:
-                print("Connection Succes! sending Screen Image...")
-                with mss.mss() as sct:
-                    #monitor = sct.monitors[1]
-                    while True:
-                        sct_img = sct.grab(CAPTURE_REGION)
-                        img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
-                        r, g, b = img.split()
-                        resized_img = Image.merge("RGB", (b, g, r)).resize((SCREEN_WIDTH, SCREEN_HEIGHT), Image.Resampling.LANCZOS)                        
-                        buffer = io.BytesIO()
-                        resized_img.save(
-                        buffer,
-                        format="JPEG",
-                        quality=JPEG_QUALITY,
-                        optimize=True,
-                        subsampling=1
-                    )
-                        jpeg_data = buffer.getvalue()
+            line = ser.readline().decode('utf-8').strip()
+            print(f"Received: {line}")
+            # Update States
+            if line == "LEFT_DN":   is_left = True
+            elif line == "LEFT_UP":  is_left = False; pydirectinput.keyUp('left')
+            
+            if line == "RIGHT_DN":  is_right = True
+            elif line == "RIGHT_UP": is_right = False; pydirectinput.keyUp('right')
+            
+            if line == "Z_DN":      is_z = True
+            elif line == "Z_UP":     is_z = False; pydirectinput.keyUp('z')
+        except:
+            pass
 
-                        await websocket.send(f"JPEG_FRAME_SIZE:{len(jpeg_data)}")
-                        await websocket.send(jpeg_data)
-                        await asyncio.sleep(1 / TARGET_FPS)
+    # 2. THE ACTION: If state is True, keep the key DOWN
+    # This runs every loop (very fast) so the game never "loses" the press
+    if is_left:  pydirectinput.keyDown('left')
+    if is_right: pydirectinput.keyDown('right')
+    if is_z:     pydirectinput.keyDown('z')
 
-        except websockets.exceptions.ConnectionClosed as e:
-            print(f"Connection Closed: {e}. Trying again...")
-            await asyncio.sleep(2) 
-        except Exception as e:
-            print(f"Some error happen: {e}")
-            await asyncio.sleep(2)
-
-if __name__ == "__main__":
-    asyncio.run(send_screen())
+    # 3. Frequency: 0.01 is a good balance for Mario
+    time.sleep(0.01)
