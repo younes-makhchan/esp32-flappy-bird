@@ -1,5 +1,7 @@
 # Flappy Bird - ESP32 TFT Display Game
 
+![Flappy Bird Game](images/image.png){ height=250px }
+
 A Flappy Bird game implementation for ESP32 with ST7789 TFT display.
 
 ## Project Overview
